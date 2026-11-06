@@ -1,11 +1,11 @@
-// SmartInvest permanent-link service worker: receives Web Push notifications.
+// MyInvest permanent-link service worker: receives Web Push notifications.
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
 
 self.addEventListener('push', event => {
     let data = {};
     try { data = event.data ? event.data.json() : {}; } catch (e) { data = { body: event.data && event.data.text() }; }
-    const title = data.title || 'SmartInvest';
+    const title = data.title || 'MyInvest';
     event.waitUntil(self.registration.showNotification(title, {
         body: data.body || '',
         tag: data.tag || undefined,
