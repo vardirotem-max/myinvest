@@ -43,6 +43,10 @@
   /* App shell: dashboard full-screen inside the home-screen app (no browser bar) */
   #appFrame{position:fixed;left:0;right:0;top:env(safe-area-inset-top);bottom:env(safe-area-inset-bottom);width:100%;height:calc(100% - env(safe-area-inset-top) - env(safe-area-inset-bottom));border:0;background:transparent;opacity:0;transition:opacity .25s}
   #appFrame.ready{opacity:1}
+  /* Face ID lock / setup sheet shown over the embedded dashboard */
+  #lock{position:fixed;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,#E9F1FF,#DCE8FF);padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+  #lock .card{width:min(88vw,340px)}
+  #lock .btn:disabled{opacity:.6}
   html.embedded body::before{background:linear-gradient(180deg,#E9F1FF,#DCE8FF)}
 </style>
 </head>
@@ -64,6 +68,15 @@
   <div id="notif" class="hidden">
     <button class="btn" id="enableBtn" type="button">הפעל התראות במכשיר זה</button>
     <button class="btn ghost" id="skipBtn" type="button">לא עכשיו</button>
+  </div>
+</div>
+<div id="lock" class="hidden" role="dialog" aria-modal="true" aria-labelledby="lockTitle">
+  <div class="card">
+    <img class="logo" src="icon-192.png" alt="" width="64" height="64">
+    <h1 class="wm" id="lockTitle"><b>My</b>Invest</h1>
+    <p id="lockMsg"></p>
+    <button class="btn" id="lockBtn" type="button"></button>
+    <button class="btn ghost hidden" id="lockPin" type="button">כניסה עם קוד PIN</button>
   </div>
 </div>
 <script>
@@ -121,6 +134,7 @@
   var frame = null, currentServer = null;
   function embed(target, server) {
     currentServer = server;
+    try { hideLock(); } catch (e) {}
     document.documentElement.classList.add('embedded');
     if (!frame) {
       frame = document.createElement('iframe');
@@ -139,6 +153,100 @@
   }
   setInterval(followServer, 60000);
   document.addEventListener('visibilitychange', followServer);
+
+  // ---- Face ID + session vault, kept on this permanent address ----
+  // The dashboard address changes whenever the PC restarts, and Face ID credentials plus the dashboard's
+  // storage are tied to that address. Here (stable origin) we keep the credential and a copy of the session
+  // token, and hand the token to the dashboard only after a successful Face ID.
+  var vault = (function () {
+    var K = 'si_vault';
+    function load() { try { return JSON.parse(localStorage.getItem(K) || '{}') || {}; } catch (e) { return {}; } }
+    return {
+      get: load,
+      set: function (p) { var v = load(); for (var k in p) v[k] = p[k]; try { localStorage.setItem(K, JSON.stringify(v)); } catch (e) {} return v; }
+    };
+  })();
+  var TOKEN_SHAPE = /^[A-Za-z0-9_.\-]{32,256}$/;
+  function rand(n) { var a = new Uint8Array(n); crypto.getRandomValues(a); return a; }
+  function bufToB64(b) { var a = new Uint8Array(b), s = ''; for (var i = 0; i < a.length; i++) s += String.fromCharCode(a[i]); return btoa(s); }
+  function b64ToBuf(s) { var b = atob(s), a = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a.buffer; }
+  function reply(m) { if (frame && frame.contentWindow && currentServer) { m.si = 1; try { frame.contentWindow.postMessage(m, currentServer); } catch (e) {} } }
+  async function uvpaa() {
+    try { return !!(window.PublicKeyCredential && PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()); } catch (e) { return false; }
+  }
+  async function faceState() {
+    var v = vault.get();
+    return { type: 'faceid-state', supported: await uvpaa(), registered: !!(v.cred && v.cred.rawId), createdAt: (v.cred && v.cred.createdAt) || null };
+  }
+  var lockEl = document.getElementById('lock'), lockBtn = document.getElementById('lockBtn'), lockPin = document.getElementById('lockPin'), lockMsg = document.getElementById('lockMsg'), lockMode = null;
+  function showLock(mode, text, btnText) {
+    lockMode = mode; lockMsg.textContent = text; lockBtn.textContent = btnText; lockBtn.disabled = false;
+    lockPin.classList.toggle('hidden', mode !== 'unlock');
+    lockEl.classList.remove('hidden');
+  }
+  function hideLock() { lockEl.classList.add('hidden'); lockMode = null; }
+  // The tap on this button is the user gesture iOS requires before it shows Face ID
+  lockBtn.onclick = async function () {
+    var mode = lockMode; lockBtn.disabled = true;
+    try {
+      var v = vault.get();
+      if (mode === 'setup') {
+        var cred = await navigator.credentials.create({ publicKey: {
+          challenge: rand(32), rp: { name: 'MyInvest', id: location.hostname },
+          user: { id: rand(16), name: 'rotem', displayName: 'רותם' },
+          pubKeyCredParams: [{ alg: -7, type: 'public-key' }, { alg: -257, type: 'public-key' }],
+          authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' },
+          timeout: 60000, attestation: 'none' } });
+        vault.set({ cred: { rawId: bufToB64(cred.rawId), createdAt: new Date().toISOString() } });
+        hideLock();
+        reply(await faceState());
+        reply({ type: 'toast', text: 'Face ID הוגדר בהצלחה במכשיר זה 👤✨', ok: true });
+      } else {
+        await navigator.credentials.get({ publicKey: {
+          challenge: rand(32), rpId: location.hostname, timeout: 60000, userVerification: 'required',
+          allowCredentials: [{ id: b64ToBuf(v.cred.rawId), type: 'public-key', transports: ['internal'] }] } });
+        hideLock();
+        if (mode === 'unlock') reply({ type: 'session', token: vault.get().token });
+        else reply({ type: 'toast', text: 'Face ID עובד תקין ✅', ok: true });
+      }
+    } catch (e) {
+      lockBtn.disabled = false;
+      lockMsg.textContent = (e && e.name === 'NotAllowedError') ? 'האימות בוטל. נסה שוב או היכנס עם קוד PIN.' : 'האימות נכשל. נסה שוב או היכנס עם קוד PIN.';
+    }
+  };
+  lockPin.onclick = function () { hideLock(); reply({ type: 'none', reason: 'pin' }); };
+  window.addEventListener('message', async function (e) {
+    if (!frame || e.source !== frame.contentWindow || e.origin !== currentServer) return;
+    var d = e.data;
+    if (!d || d.si !== 1 || typeof d.type !== 'string') return;
+    var v;
+    switch (d.type) {
+      case 'hello': reply({ type: 'hello-ack', v: 1 }); reply(await faceState()); break;
+      case 'state-request': reply(await faceState()); break;
+      case 'session-save': if (typeof d.token === 'string' && TOKEN_SHAPE.test(d.token)) vault.set({ token: d.token }); break;
+      case 'session-clear': vault.set({ token: null }); break;
+      case 'session-request':
+      case 'unlock':
+        v = vault.get();
+        if (!v.token) { reply({ type: 'none', reason: 'no-session' }); break; }
+        if (!(v.cred && v.cred.rawId)) {
+          if (d.type === 'session-request') reply({ type: 'session', token: v.token });
+          else reply({ type: 'none', reason: 'no-faceid' });
+          break;
+        }
+        showLock('unlock', 'אמת זהות כדי לפתוח את MyInvest', 'פתח עם Face ID');
+        break;
+      case 'faceid-setup':
+        if (typeof d.token === 'string' && TOKEN_SHAPE.test(d.token)) vault.set({ token: d.token });
+        if (!vault.get().token) { reply({ type: 'toast', text: 'יש להתחבר עם קוד PIN לפני הגדרת Face ID', ok: false }); break; }
+        showLock('setup', 'אשר כדי להפעיל כניסה ב-Face ID במכשיר זה', 'הגדר Face ID');
+        break;
+      case 'faceid-remove': vault.set({ cred: null }); reply(await faceState()); break;
+      case 'faceid-test':
+        if (vault.get().cred) showLock('test', 'בדיקת Face ID', 'בדוק עכשיו');
+        break;
+    }
+  });
 
   function showInstall() {
     spin.style.display = 'none';
