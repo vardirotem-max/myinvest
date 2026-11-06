@@ -37,6 +37,10 @@
   .btn.ghost{background:linear-gradient(180deg,rgba(255,255,255,.8),rgba(255,255,255,.45));color:#22304D;border-color:rgba(255,255,255,.85);box-shadow:0 2px 8px rgba(28,64,160,.1),inset 0 1px 0 #fff;font-weight:500}
   .hidden{display:none}
   @keyframes s{to{transform:rotate(360deg)}}
+  .steps{text-align:right;margin:16px 0 8px;padding:0 20px 0 0;font-size:14px;line-height:1.9;color:#22304D}
+  .steps .ico{display:inline-block;padding:0 6px;border-radius:6px;background:rgba(10,108,255,.12);color:#0A6CFF;font-weight:700}
+  .note{font-size:12px!important;margin-top:6px!important;color:#6B7690!important}
+  .hidden{display:none}
 </style>
 </head>
 <body>
@@ -45,6 +49,15 @@
   <h1 class="wm"><b>My</b>Invest</h1>
   <p id="msg">מתחבר לשרת המאובטח…</p>
   <div class="spin" id="spin"></div>
+  <div id="install" class="hidden">
+    <ol class="steps">
+      <li>לחץ על כפתור השיתוף <span class="ico">⬆︎</span> בתחתית ספארי</li>
+      <li>בחר <b>"הוסף למסך הבית"</b> ואשר</li>
+      <li>פתח את <b>MyInvest</b> מהאייקון החדש והפעל התראות</li>
+    </ol>
+    <p class="note">אם יש לך אייקון ישן של MyInvest או SmartInvest, מחק אותו קודם. הוא נשמר מכתובת זמנית ולא יעבוד.</p>
+    <button class="btn ghost" id="continueBtn" type="button">המשך לדשבורד בספארי</button>
+  </div>
   <div id="notif" class="hidden">
     <button class="btn" id="enableBtn" type="button">הפעל התראות במכשיר זה</button>
     <button class="btn ghost" id="skipBtn" type="button">לא עכשיו</button>
@@ -52,10 +65,13 @@
 </div>
 <script>
 (function () {
-  var msg = document.getElementById('msg'), spin = document.getElementById('spin'), notif = document.getElementById('notif');
-  var isStandalone = window.navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
-  var isIOS = /iP(hone|ad|od)/.test(navigator.userAgent);
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function () {});
+  var msg = document.getElementById('msg'), spin = document.getElementById('spin'), notif = document.getElementById('notif'), install = document.getElementById('install');
+  var isStandalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+  var isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  var params = new URLSearchParams(location.search);
+  var swReady = ('serviceWorker' in navigator) ? navigator.serviceWorker.register('sw.js').then(function () { return navigator.serviceWorker.ready; }) : Promise.reject(new Error('no sw'));
+  swReady.catch(function () {});
+  var ls = { get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} } };
 
   function b64uToBytes(s) { s = s.replace(/-/g, '+').replace(/_/g, '/'); var b = atob(s + '='.repeat((4 - s.length % 4) % 4)); var a = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a; }
   async function serverUrl() {
@@ -65,56 +81,89 @@
     return d.url;
   }
   function safeGo() {
-    var go = new URLSearchParams(location.search).get('go') || '/';
-    return /^\/[A-Za-z0-9\/?=&._#-]*$/.test(go) ? go : '/';
+    var go = params.get('go') || '/';
+    if (!/^\/[A-Za-z0-9\/?=&._#-]*$/.test(go)) go = '/';
+    var k = go.indexOf('#');
+    return { path: k >= 0 ? go.slice(0, k) : go, hash: k >= 0 ? go.slice(k + 1) : '' };
   }
-  async function redirect(extraHash) {
+  function devName() { return (isIOS ? 'iPhone' : (navigator.platform || 'מכשיר')) + (isStandalone ? ' (אפליקציה)' : ''); }
+  // Current subscription, encoded for the dashboard (re-sent on every launch so it can never get lost)
+  async function pushPayload(allowSubscribe, url) {
+    if (!('Notification' in window) || Notification.permission !== 'granted' || !('PushManager' in window)) return '';
+    var reg = await Promise.race([swReady, new Promise(function (_, rej) { setTimeout(function () { rej(new Error('sw timeout')); }, 8000); })]);
+    var sub = await reg.pushManager.getSubscription();
+    if (!sub && allowSubscribe) {
+      var keyRes = await fetch(url + '/api/push/vapid-public-key', { cache: 'no-store' });
+      var key = (await keyRes.json()).publicKey;
+      if (!key) throw new Error('השרת לא מוכן להתראות');
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(key) });
+    }
+    if (!sub) return '';
+    return btoa(unescape(encodeURIComponent(JSON.stringify({ subscription: sub.toJSON(), device: devName() }))));
+  }
+  async function redirect(payload) {
     try {
       var url = await serverUrl();
-      location.replace(url + safeGo() + (extraHash || ''));
+      if (payload === undefined) { try { payload = await pushPayload(true, url); } catch (e) { payload = ''; } }
+      var go = safeGo();
+      var hash = [go.hash, isStandalone ? 'via=link' : '', payload ? 'push=' + encodeURIComponent(payload) : ''].filter(Boolean);
+      location.replace(url + go.path + (hash.length ? '#' + hash.join('&') : ''));
     } catch (e) {
       spin.style.display = 'none';
       msg.innerHTML = 'השרת לא זמין כרגע. ייתכן שהמחשב כבוי או מתחבר מחדש.<br><a href="">נסה שוב</a>';
     }
   }
+  function showInstall() {
+    spin.style.display = 'none';
+    msg.innerHTML = '<b>שמור את MyInvest למסך הבית מהעמוד הזה</b><br>כך האייקון יעבוד תמיד, וההתראות יפעלו.';
+    install.classList.remove('hidden');
+  }
   function showNotifSetup() {
     spin.style.display = 'none';
     if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
-      msg.innerHTML = isIOS && !isStandalone
-        ? 'באייפון ההתראות עובדות רק מהאפליקציה במסך הבית: לחץ על כפתור השיתוף ← "הוסף למסך הבית", ופתח משם.'
-        : 'הדפדפן הזה לא תומך בהתראות.';
+      if (isIOS && !isStandalone) { showInstall(); return; }
+      msg.textContent = 'הדפדפן הזה לא תומך בהתראות.';
       notif.classList.remove('hidden'); document.getElementById('enableBtn').classList.add('hidden');
       document.getElementById('skipBtn').textContent = 'המשך לדשבורד';
       return;
     }
-    msg.textContent = 'קבל התראה על תנודה חריגה, על תדריך יום שישי ועל הדוח החודשי.';
+    if (Notification.permission === 'denied') {
+      msg.innerHTML = 'ההתראות חסומות במכשיר הזה.<br>פתח <b>הגדרות ← התראות ← MyInvest</b> והפעל "אפשר התראות", ואז פתח שוב את האפליקציה.';
+      notif.classList.remove('hidden'); document.getElementById('enableBtn').classList.add('hidden');
+      document.getElementById('skipBtn').textContent = 'המשך לדשבורד';
+      return;
+    }
+    msg.textContent = 'קבל התראה על תדריך יום שישי, הפודקאסט השבועי, סיכום יומי, תנודה חריגה והדוח החודשי.';
     notif.classList.remove('hidden');
   }
-  document.getElementById('skipBtn').onclick = function () { try { localStorage.setItem('si_notif_dismissed', '1'); } catch (e) {} notif.classList.add('hidden'); spin.style.display = ''; msg.textContent = 'מתחבר לשרת המאובטח…'; redirect(); };
-  document.getElementById('enableBtn').onclick = async function () {
+  document.getElementById('continueBtn').onclick = function () { ls.set('si_install_seen', '1'); install.classList.add('hidden'); spin.style.display = ''; msg.textContent = 'מתחבר לשרת המאובטח…'; redirect(); };
+  document.getElementById('skipBtn').onclick = function () { ls.set('si_notif_dismissed', '1'); notif.classList.add('hidden'); spin.style.display = ''; msg.textContent = 'מתחבר לשרת המאובטח…'; redirect(); };
+  document.getElementById('enableBtn').onclick = function () {
     var btn = this; btn.disabled = true; btn.textContent = 'מפעיל…';
-    try {
-      var perm = await Notification.requestPermission();
-      if (perm !== 'granted') throw new Error('ההרשאה לא אושרה. אפשר להפעיל אותה בהגדרות המכשיר.');
-      var reg = await navigator.serviceWorker.ready;
+    // requestPermission must be the first call inside the tap (iOS requires the user gesture)
+    Notification.requestPermission().then(async function (perm) {
+      if (perm !== 'granted') throw new Error(perm === 'denied' ? 'ההרשאה נחסמה. אפשר להפעיל אותה בהגדרות ← התראות ← MyInvest.' : 'ההרשאה לא אושרה.');
       var url = await serverUrl();
-      var keyRes = await fetch(url + '/api/push/vapid-public-key', { cache: 'no-store' });
-      var key = (await keyRes.json()).publicKey;
-      var sub = await reg.pushManager.getSubscription();
-      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(key) });
-      try { localStorage.setItem('si_notif_dismissed', '1'); } catch (e) {}
-      var payload = btoa(unescape(encodeURIComponent(JSON.stringify({ subscription: sub.toJSON(), device: (isIOS ? 'iPhone' : navigator.platform || 'מכשיר') + (isStandalone ? ' (אפליקציה)' : '') }))));
-      location.replace(url + '/#push=' + encodeURIComponent(payload));
-    } catch (e) {
+      var payload = await pushPayload(true, url);
+      if (!payload) throw new Error('לא נוצר מנוי להתראות. נסה שוב.');
+      ls.set('si_notif_dismissed', '1');
+      msg.textContent = 'ההתראות הופעלו ✓ מתחבר לדשבורד לרישום המכשיר…';
+      notif.classList.add('hidden'); spin.style.display = '';
+      redirect(payload);
+    }).catch(function (e) {
       btn.disabled = false; btn.textContent = 'נסה שוב';
-      msg.textContent = e.message || 'ההפעלה נכשלה';
-    }
+      msg.textContent = (e && e.message) || 'ההפעלה נכשלה';
+    });
   };
 
-  var wantsSetup = location.hash === '#notifications';
-  var askOnce = false;
-  try { askOnce = isStandalone && 'Notification' in window && Notification.permission === 'default' && !localStorage.getItem('si_notif_dismissed'); } catch (e) {}
-  if (wantsSetup || askOnce) showNotifSetup(); else redirect();
+  var wantsSetup = location.hash === '#notifications' || params.has('notifications');
+  var wantsInstall = params.has('install');
+  var perm = ('Notification' in window) ? Notification.permission : 'unsupported';
+  if (wantsInstall && !isStandalone) showInstall();
+  else if (wantsSetup) showNotifSetup();
+  else if (isStandalone && perm === 'default' && !ls.get('si_notif_dismissed')) showNotifSetup();
+  else if (isIOS && !isStandalone && !ls.get('si_install_seen')) showInstall();
+  else redirect();
 })();
 </script>
 </body>
