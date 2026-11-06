@@ -40,7 +40,10 @@
   .steps{text-align:right;margin:16px 0 8px;padding:0 20px 0 0;font-size:14px;line-height:1.9;color:#22304D}
   .steps .ico{display:inline-block;padding:0 6px;border-radius:6px;background:rgba(10,108,255,.12);color:#0A6CFF;font-weight:700}
   .note{font-size:12px!important;margin-top:6px!important;color:#6B7690!important}
-  .hidden{display:none}
+  /* App shell: dashboard full-screen inside the home-screen app (no browser bar) */
+  #appFrame{position:fixed;left:0;right:0;top:env(safe-area-inset-top);bottom:env(safe-area-inset-bottom);width:100%;height:calc(100% - env(safe-area-inset-top) - env(safe-area-inset-bottom));border:0;background:transparent;opacity:0;transition:opacity .25s}
+  #appFrame.ready{opacity:1}
+  html.embedded body::before{background:linear-gradient(180deg,#E9F1FF,#DCE8FF)}
 </style>
 </head>
 <body>
@@ -107,12 +110,36 @@
       if (payload === undefined) { try { payload = await pushPayload(true, url); } catch (e) { payload = ''; } }
       var go = safeGo();
       var hash = [go.hash, isStandalone ? 'via=link' : '', payload ? 'push=' + encodeURIComponent(payload) : ''].filter(Boolean);
-      location.replace(url + go.path + (hash.length ? '#' + hash.join('&') : ''));
+      var target = url + go.path + (hash.length ? '#' + hash.join('&') : '');
+      // Inside the home-screen app: keep the dashboard in a full-screen frame so iOS does not add a browser bar
+      if (isStandalone) embed(target, url); else location.replace(target);
     } catch (e) {
       spin.style.display = 'none';
       msg.innerHTML = 'השרת לא זמין כרגע. ייתכן שהמחשב כבוי או מתחבר מחדש.<br><a href="">נסה שוב</a>';
     }
   }
+  var frame = null, currentServer = null;
+  function embed(target, server) {
+    currentServer = server;
+    document.documentElement.classList.add('embedded');
+    if (!frame) {
+      frame = document.createElement('iframe');
+      frame.id = 'appFrame';
+      frame.title = 'MyInvest';
+      frame.setAttribute('allow', 'publickey-credentials-get *; publickey-credentials-create *; microphone *; clipboard-write *; autoplay *');
+      frame.onload = function () { frame.classList.add('ready'); document.querySelector('.card').style.visibility = 'hidden'; };
+      document.body.appendChild(frame);
+    }
+    frame.src = target;
+  }
+  // The tunnel address changes when the PC restarts: follow it without the user reopening the app
+  async function followServer() {
+    if (!frame || document.hidden) return;
+    try { var u = await serverUrl(); if (u !== currentServer) { frame.classList.remove('ready'); document.querySelector('.card').style.visibility = ''; embed(u + '/#via=link', u); } } catch (e) {}
+  }
+  setInterval(followServer, 60000);
+  document.addEventListener('visibilitychange', followServer);
+
   function showInstall() {
     spin.style.display = 'none';
     msg.innerHTML = '<b>שמור את MyInvest למסך הבית מהעמוד הזה</b><br>כך האייקון יעבוד תמיד, וההתראות יפעלו.';
