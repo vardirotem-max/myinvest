@@ -46,6 +46,7 @@
   /* Face ID lock / setup sheet shown over the embedded dashboard */
   #lock{position:fixed;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,#E9F1FF,#DCE8FF);padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
   #lock .card{width:min(88vw,340px)}
+  #lock.hidden{display:none}
   #lock .btn:disabled{opacity:.6}
   html.embedded body::before{background:linear-gradient(180deg,#E9F1FF,#DCE8FF)}
 </style>
