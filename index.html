@@ -141,7 +141,7 @@
       frame = document.createElement('iframe');
       frame.id = 'appFrame';
       frame.title = 'MyInvest';
-      frame.setAttribute('allow', 'publickey-credentials-get *; publickey-credentials-create *; microphone *; clipboard-write *; autoplay *');
+      frame.setAttribute('allow', 'publickey-credentials-get *; publickey-credentials-create *; microphone *; clipboard-write *; clipboard-read *; accelerometer *; gyroscope *; magnetometer *; autoplay *');
       frame.onload = function () { frame.classList.add('ready'); document.querySelector('.card').style.visibility = 'hidden'; };
       document.body.appendChild(frame);
     }
