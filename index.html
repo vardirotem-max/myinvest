@@ -185,6 +185,7 @@
     lockPin.classList.toggle('hidden', mode !== 'unlock');
     lockEl.classList.remove('hidden');
   }
+  var lastUnlock = 0; // a Face ID done moments ago also covers a dashboard reload / duplicate request
   function hideLock() { lockEl.classList.add('hidden'); lockMode = null; }
   // The tap on this button is the user gesture iOS requires before it shows Face ID
   lockBtn.onclick = async function () {
@@ -207,7 +208,7 @@
           challenge: rand(32), rpId: location.hostname, timeout: 60000, userVerification: 'required',
           allowCredentials: [{ id: b64ToBuf(v.cred.rawId), type: 'public-key', transports: ['internal'] }] } });
         hideLock();
-        if (mode === 'unlock') reply({ type: 'session', token: vault.get().token });
+        if (mode === 'unlock') { lastUnlock = Date.now(); reply({ type: 'session', token: vault.get().token }); }
         else reply({ type: 'toast', text: 'Face ID עובד תקין ✅', ok: true });
       }
     } catch (e) {
@@ -225,7 +226,7 @@
       case 'hello': reply({ type: 'hello-ack', v: 1 }); reply(await faceState()); break;
       case 'state-request': reply(await faceState()); break;
       case 'session-save': if (typeof d.token === 'string' && TOKEN_SHAPE.test(d.token)) vault.set({ token: d.token }); break;
-      case 'session-clear': vault.set({ token: null }); break;
+      case 'session-clear': vault.set({ token: null }); lastUnlock = 0; break;
       case 'session-request':
       case 'unlock':
         v = vault.get();
@@ -235,6 +236,8 @@
           else reply({ type: 'none', reason: 'no-faceid' });
           break;
         }
+        if (lockMode === 'unlock') break; // sheet already waiting for the tap
+        if (Date.now() - lastUnlock < 300000) { reply({ type: 'session', token: v.token }); break; }
         showLock('unlock', 'אמת זהות כדי לפתוח את MyInvest', 'פתח עם Face ID');
         break;
       case 'faceid-setup':
